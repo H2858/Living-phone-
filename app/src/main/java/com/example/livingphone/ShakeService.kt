@@ -137,7 +137,8 @@ class ShakeService : Service(), SensorEventListener {
             }
             Sensor.TYPE_LIGHT -> {
                 val lux = event.values[0]
-                val isDark = lux < 5.0f
+                // تم خفض القيمة إلى 1.0f لضمان عدم تفعيلها إلا في الظلام الحقيقي (الجيب أو التغطية الكاملة)
+                val isDark = lux < 1.0f 
                 val now = System.currentTimeMillis()
 
                 if (isDark != lastLightStateDark && (now - lastLightTransitionTimestamp > LIGHT_COOLDOWN_MS)) {
