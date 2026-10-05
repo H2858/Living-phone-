@@ -118,9 +118,9 @@ class ShakeService : Service(), SensorEventListener {
         releaseMediaPlayer()
 
         val soundResources = listOf(
-            R.raw.shake_1,
-            R.raw.shake_2,
-            R.raw.shake_3
+            R.raw.s_one,
+            R.raw.s_two,
+            R.raw.s_three
         )
         val selectedSound = soundResources.random()
 
