@@ -120,7 +120,9 @@ class ShakeService : Service(), SensorEventListener {
         val soundResources = listOf(
             R.raw.s_one,
             R.raw.s_two,
-            R.raw.s_three
+            R.raw.s_three,
+            R.raw.s_four,
+            R.raw.s_five
         )
         val selectedSound = soundResources.random()
 
