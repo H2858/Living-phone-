@@ -14,6 +14,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
@@ -25,25 +27,33 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.sqrt
+import kotlin.concurrent.thread
 
 class ShakeService : Service(), SensorEventListener {
 
     private var sensorManager: SensorManager? = null
     private var accelerometer: Sensor? = null
     private var lightSensor: Sensor? = null
+    private var proximitySensor: Sensor? = null
     private var mediaPlayer: MediaPlayer? = null
     private var lastShakeTimestamp: Long = 0L
     private var lastLightStateDark: Boolean = false
+    private var lastProximityTriggerTime: Long = 0L
     private var powerReceiver: BroadcastReceiver? = null
+    private var audioRecord: AudioRecord? = null
+    private var isListeningAudio = false
 
     companion object {
         private const val TAG = "ShakeService"
         const val CHANNEL_ID = "living_phone"
         private const val NOTIFICATION_ID = 1001
-        private const val SHAKE_THRESHOLD_G = 2.5f
+        private const val SHAKE_THRESHOLD_G = 2.2f
         private const val COOLDOWN_MS = 3000L
         private const val LIGHT_COOLDOWN_MS = 10000L
+        private const val PROXIMITY_COOLDOWN_MS = 5000L
+        private const val SCREAM_COOLDOWN_MS = 8000L
         private var lastLightTransitionTimestamp: Long = 0L
+        private var lastScreamTimestamp: Long = 0L
 
         const val ACTION_START = "com.example.livingphone.ACTION_START"
         const val ACTION_STOP = "com.example.livingphone.ACTION_STOP"
@@ -81,7 +91,62 @@ class ShakeService : Service(), SensorEventListener {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
 
+        proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+        proximitySensor?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+
         registerPowerReceiver()
+        startAudioListener()
+    }
+
+    private fun startAudioListener() {
+        isListeningAudio = true
+        thread(start = true) {
+            try {
+                val sampleRate = 8000
+                val channelConfig = android.media.AudioFormat.CHANNEL_IN_MONO
+                val audioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT
+                val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize
+                )
+
+                val buffer = ByteArray(bufferSize)
+                audioRecord?.startRecording()
+
+                while (isListeningAudio) {
+                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    if (read > 0) {
+                        var sum = 0L
+                        for (i in 0 until read step 2) {
+                            val sample = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
+                            sum += (sample * sample).toLong()
+                        }
+                        val rms = sqrt((sum / (read / 2)).toDouble())
+                        
+                        // عتبة لاكتشاف الصراخ أو الأصوات العالية المفاجئة
+                        if (rms > 25000.0) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastScreamTimestamp >= SCREAM_COOLDOWN_MS) {
+                                lastScreamTimestamp = now
+                                val screamSounds = listOf(R.raw.scream, R.raw.scream_two)
+                                playSound(screamSounds.random())
+                                triggerHapticFeedback()
+                            }
+                        }
+                    }
+                    Thread.sleep(200)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Audio listener error", e)
+            }
+        }
     }
 
     private fun registerPowerReceiver() {
@@ -121,9 +186,14 @@ class ShakeService : Service(), SensorEventListener {
 
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
-                val gX = event.values[0] / SensorManager.GRAVITY_EARTH
-                val gY = event.values[1] / SensorManager.GRAVITY_EARTH
-                val gZ = event.values[2] / SensorManager.GRAVITY_EARTH
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
+
+                val gX = x / SensorManager.GRAVITY_EARTH
+                val gY = y / SensorManager.GRAVITY_EARTH
+                val gZ = z / SensorManager.GRAVITY_EARTH
+
                 val gForce = sqrt((gX * gX + gY * gY + gZ * gZ).toDouble()).toFloat()
 
                 if (gForce > SHAKE_THRESHOLD_G) {
@@ -137,8 +207,7 @@ class ShakeService : Service(), SensorEventListener {
             }
             Sensor.TYPE_LIGHT -> {
                 val lux = event.values[0]
-                // تم خفض القيمة إلى 1.0f لضمان عدم تفعيلها إلا في الظلام الحقيقي (الجيب أو التغطية الكاملة)
-                val isDark = lux < 1.0f 
+                val isDark = lux < 1.0f
                 val now = System.currentTimeMillis()
 
                 if (isDark != lastLightStateDark && (now - lastLightTransitionTimestamp > LIGHT_COOLDOWN_MS)) {
@@ -149,6 +218,19 @@ class ShakeService : Service(), SensorEventListener {
                         playSound(R.raw.darkness)
                     } else {
                         playSound(R.raw.light)
+                    }
+                }
+            }
+            Sensor.TYPE_PROXIMITY -> {
+                val distance = event.values[0]
+                // إذا اقترب شيء من الشاشة (أقل من 5 سم أو مسافة قريبة جداً)
+                if (distance < (proximitySensor?.maximumRange ?: 5.0f)) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastProximityTriggerTime >= PROXIMITY_COOLDOWN_MS) {
+                        lastProximityTriggerTime = now
+                        val proxSounds = listOf(R.raw.proximity, R.raw.proximity_two)
+                        playSound(proxSounds.random())
+                        triggerHapticFeedback()
                     }
                 }
             }
@@ -240,7 +322,7 @@ class ShakeService : Service(), SensorEventListener {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Living Phone is Alive")
-            .setContentText("Listening to shakes, light, and energy...")
+            .setContentText("Listening to shakes, light, proximity, mic, and energy...")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -250,10 +332,18 @@ class ShakeService : Service(), SensorEventListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        isListeningAudio = false
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+        } catch (e: Exception) {}
+        audioRecord = null
+
         sensorManager?.unregisterListener(this)
         sensorManager = null
         accelerometer = null
         lightSensor = null
+        proximitySensor = null
 
         powerReceiver?.let {
             try { unregisterReceiver(it) } catch (e: Exception) {}
