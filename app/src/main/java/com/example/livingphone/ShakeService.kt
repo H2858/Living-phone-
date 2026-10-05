@@ -50,7 +50,7 @@ class ShakeService : Service(), SensorEventListener {
         private const val SHAKE_THRESHOLD_G = 2.2f
         private const val COOLDOWN_MS = 3000L
         private const val LIGHT_COOLDOWN_MS = 10000L
-        private const val PROXIMITY_COOLDOWN_MS = 5000L
+        private const val PROXIMITY_COOLDOWN_MS = 8000L
         private const val SCREAM_COOLDOWN_MS = 8000L
         private var lastLightTransitionTimestamp: Long = 0L
         private var lastScreamTimestamp: Long = 0L
@@ -130,7 +130,6 @@ class ShakeService : Service(), SensorEventListener {
                         }
                         val rms = sqrt((sum / (read / 2)).toDouble())
                         
-                        // عتبة لاكتشاف الصراخ أو الأصوات العالية المفاجئة
                         if (rms > 25000.0) {
                             val now = System.currentTimeMillis()
                             if (now - lastScreamTimestamp >= SCREAM_COOLDOWN_MS) {
@@ -207,7 +206,7 @@ class ShakeService : Service(), SensorEventListener {
             }
             Sensor.TYPE_LIGHT -> {
                 val lux = event.values[0]
-                val isDark = lux < 1.0f
+                val isDark = lux < 0.5f // عتبة أدق للظلام الدامس لمنع التداخل
                 val now = System.currentTimeMillis()
 
                 if (isDark != lastLightStateDark && (now - lastLightTransitionTimestamp > LIGHT_COOLDOWN_MS)) {
@@ -223,8 +222,12 @@ class ShakeService : Service(), SensorEventListener {
             }
             Sensor.TYPE_PROXIMITY -> {
                 val distance = event.values[0]
-                // إذا اقترب شيء من الشاشة (أقل من 5 سم أو مسافة قريبة جداً)
-                if (distance < (proximitySensor?.maximumRange ?: 5.0f)) {
+                val maxRange = proximitySensor?.maximumRange ?: 5.0f
+                
+                // يتم تفعيل القرب فقط إذا كان هناك إضاءة محيطة كافية (لضمان أنه ليس في جيب مظلم)
+                val isPhoneInPocket = lastLightStateDark
+                
+                if (distance < maxRange && !isPhoneInPocket) {
                     val now = System.currentTimeMillis()
                     if (now - lastProximityTriggerTime >= PROXIMITY_COOLDOWN_MS) {
                         lastProximityTriggerTime = now
@@ -322,7 +325,7 @@ class ShakeService : Service(), SensorEventListener {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Living Phone is Alive")
-            .setContentText("Listening to shakes, light, proximity, mic, and energy...")
+            .setContentText("Living phone senses are fully separated and active...")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
