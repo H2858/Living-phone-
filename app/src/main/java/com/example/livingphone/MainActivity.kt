@@ -1,195 +1,295 @@
 package com.example.livingphone
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
-import android.content.BroadcastReceiver
+import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.media.MediaPlayer
-import android.os.BatteryManager
+import android.content.pm.PackageManager
 import android.os.Build
-import android.os.IBinder
-import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlin.math.sqrt
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-class ShakeService : Service(), SensorEventListener {
+class MainActivity : ComponentActivity() {
 
-    companion object {
-        const val ACTION_START = "ACTION_START"
-        const val ACTION_STOP = "ACTION_STOP"
-        
-        private val _isServiceRunning = MutableStateFlow(false)
-        val isServiceRunning: StateFlow<Boolean> = _isServiceRunning.asStateFlow()
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    LivingPhoneScreen()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LivingPhoneScreen() {
+    val context = LocalContext.current
+    val isRunning by ShakeService.isServiceRunning.collectAsStateWithLifecycle()
+
+    var hasNotificationPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+        )
     }
 
-    private lateinit var sensorManager: SensorManager
-    private var accelerometer: Sensor? = null
-    private var proximitySensor: Sensor? = null
-    private var lightSensor: Sensor? = null
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasNotificationPermission = isGranted
+        if (isGranted) {
+            startLivingPhoneService(context)
+        } else {
+            Toast.makeText(
+                context,
+                "Notification permission is needed for foreground service.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
-    private var mediaPlayer: MediaPlayer? = null
-    private var currentLang = "dz"
-    
-    private var lastPlayTime: Long = 0
-    private const val COOLDOWN_TIME = 4000L
-    private var lastShakeTime: Long = 0
+    Scaffold { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isRunning)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isRunning) Icons.Default.Sensors else Icons.Default.NotificationsActive,
+                        contentDescription = "Status Icon",
+                        tint = if (isRunning)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(52.dp)
+                    )
+                }
 
-    private val powerReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                Intent.ACTION_POWER_CONNECTED -> playVoice("power_connected_$currentLang")
-                Intent.ACTION_POWER_DISCONNECTED -> playVoice("power_disconnected_$currentLang")
-                Intent.ACTION_BATTERY_CHANGED -> {
-                    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-                    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-                    val batteryPct = (level * 100 / scale.toFloat()).toInt()
+                Spacer(modifier = Modifier.height(24.dp))
 
-                    if (batteryPct == 15) {
-                        playVoice("hunger_$currentLang")
-                    } else if (batteryPct == 100) {
-                        playVoice("burp_$currentLang")
+                Text(
+                    text = "Living Phone",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = if (isRunning)
+                        "The phone is alive! Shake or change conditions to hear it."
+                    else
+                        "The living phone service is sleeping. Tap Start to wake it up.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("service_status_card"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isRunning)
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isRunning)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.outline
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = if (isRunning) "Service Status: Running" else "Service Status: Stopped",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.testTag("service_status_text")
+                        )
                     }
                 }
-            }
-        }
-    }
 
-    override fun onCreate() {
-        super.onCreate()
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
-        lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
-    }
+                Spacer(modifier = Modifier.height(32.dp))
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> {
-                startForegroundServiceWithNotification()
-                registerSensorsAndReceivers()
-                _isServiceRunning.value = true
-            }
-            ACTION_STOP -> {
-                stopForeground(true)
-                stopSelf()
-            }
-        }
-        return START_STICKY
-    }
-
-    private fun startForegroundServiceWithNotification() {
-        val channelId = "living_phone_channel"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Living Phone Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
-        }
-
-        val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Living Phone Active")
-            .setContentText("Sensors and battery monitors are running.")
-            .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .build()
-
-        startForeground(1, notification)
-    }
-
-    private fun registerSensorsAndReceivers() {
-        accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-        proximitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
-        lightSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
-
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_POWER_CONNECTED)
-            addAction(Intent.ACTION_POWER_DISCONNECTED)
-            addAction(Intent.ACTION_BATTERY_CHANGED)
-        }
-        registerReceiver(powerReceiver, filter)
-    }
-
-    override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null) return
-
-        when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> {
-                val x = event.values[0]
-                val y = event.values[1]
-                val z = event.values[2]
-
-                val acceleration = sqrt((x * x + y * y + z * z).toDouble()) - SensorManager.GRAVITY_EARTH
-                if (acceleration > 4.5) {
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastShakeTime > 3000) {
-                        lastShakeTime = currentTime
-                        playVoice("shake_$currentLang")
-                    }
+                Button(
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
+                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            startLivingPhoneService(context)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("start_living_phone_button"),
+                    enabled = !isRunning,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Start Icon",
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Start Living Phone",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
-                if (z < -8.5 && abs(x) < 3.0 && abs(y) < 3.0) {
-                    playVoice("suffocation_$currentLang")
-                }
-            }
-            Sensor.TYPE_LIGHT -> {
-                val lux = event.values[0]
-                if (lux < 2.0) {
-                    playVoice("darkness_$currentLang")
-                } else if (lux > 50.0) {
-                    playVoice("light_$currentLang")
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        stopLivingPhoneService(context)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("stop_living_phone_button"),
+                    enabled = isRunning,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Stop,
+                        contentDescription = "Stop Icon",
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Stop Living Phone",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
     }
+}
 
-    private fun abs(value: Float): Float = if (value < 0) -value else value
-
-    private fun playVoice(baseName: String) {
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastPlayTime < COOLDOWN_TIME) return
-        lastPlayTime = currentTime
-
-        try {
-            val resName = if (baseName.startsWith("power_")) "${baseName}_1" else baseName
-            val resId = resources.getIdentifier(resName, "raw", packageName)
-            
-            if (resId != 0) {
-                mediaPlayer?.release()
-                mediaPlayer = MediaPlayer.create(applicationContext, resId).apply {
-                    start()
-                    setOnCompletionListener { release() }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+private fun startLivingPhoneService(context: Context) {
+    val intent = Intent(context, ShakeService::class.java).apply {
+        action = ShakeService.ACTION_START
     }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onDestroy() {
-        super.onDestroy()
-        sensorManager.unregisterListener(this)
-        try {
-            unregisterReceiver(powerReceiver)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        mediaPlayer?.release()
-        _isServiceRunning.value = false
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        ContextCompat.startForegroundService(context, intent)
+    } else {
+        context.startService(intent)
     }
+}
+
+private fun stopLivingPhoneService(context: Context) {
+    val intent = Intent(context, ShakeService::class.java).apply {
+        action = ShakeService.ACTION_STOP
+    }
+    context.stopService(intent)
 }
