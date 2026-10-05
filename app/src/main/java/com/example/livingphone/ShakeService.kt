@@ -51,7 +51,7 @@ class ShakeService : Service(), SensorEventListener {
         private const val COOLDOWN_MS = 3000L
         private const val LIGHT_COOLDOWN_MS = 10000L
         private const val PROXIMITY_COOLDOWN_MS = 8000L
-        private const val SCREAM_COOLDOWN_MS = 8000L
+        private const val SCREAM_COOLDOWN_MS = 5000L // تقليل وقت الانتظار قليلاً ليصبح أسرع تفاعلاً
         private var lastLightTransitionTimestamp: Long = 0L
         private var lastScreamTimestamp: Long = 0L
 
@@ -130,7 +130,8 @@ class ShakeService : Service(), SensorEventListener {
                         }
                         val rms = sqrt((sum / (read / 2)).toDouble())
                         
-                        if (rms > 25000.0) {
+                        // تم خفض العتبة إلى 9000.0 لكي يستجيب لأي صراخ أو صوت عالٍ بقربه فوراً
+                        if (rms > 9000.0) {
                             val now = System.currentTimeMillis()
                             if (now - lastScreamTimestamp >= SCREAM_COOLDOWN_MS) {
                                 lastScreamTimestamp = now
@@ -140,7 +141,7 @@ class ShakeService : Service(), SensorEventListener {
                             }
                         }
                     }
-                    Thread.sleep(200)
+                    Thread.sleep(150) // تقليل وقت الفحص قليلاً لتكون الاستجابة فورية
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Audio listener error", e)
@@ -206,7 +207,7 @@ class ShakeService : Service(), SensorEventListener {
             }
             Sensor.TYPE_LIGHT -> {
                 val lux = event.values[0]
-                val isDark = lux < 0.5f // عتبة أدق للظلام الدامس لمنع التداخل
+                val isDark = lux < 0.5f
                 val now = System.currentTimeMillis()
 
                 if (isDark != lastLightStateDark && (now - lastLightTransitionTimestamp > LIGHT_COOLDOWN_MS)) {
@@ -223,8 +224,6 @@ class ShakeService : Service(), SensorEventListener {
             Sensor.TYPE_PROXIMITY -> {
                 val distance = event.values[0]
                 val maxRange = proximitySensor?.maximumRange ?: 5.0f
-                
-                // يتم تفعيل القرب فقط إذا كان هناك إضاءة محيطة كافية (لضمان أنه ليس في جيب مظلم)
                 val isPhoneInPocket = lastLightStateDark
                 
                 if (distance < maxRange && !isPhoneInPocket) {
@@ -325,7 +324,7 @@ class ShakeService : Service(), SensorEventListener {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Living Phone is Alive")
-            .setContentText("Living phone senses are fully separated and active...")
+            .setContentText("Listening to voice, shakes, and senses...")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
