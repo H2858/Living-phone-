@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/livingphone/ShakeService.kt
 package com.example.livingphone
 
 import android.app.Notification
@@ -6,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -29,8 +30,11 @@ class ShakeService : Service(), SensorEventListener {
 
     private var sensorManager: SensorManager? = null
     private var accelerometer: Sensor? = null
+    private var lightSensor: Sensor? = null
     private var mediaPlayer: MediaPlayer? = null
     private var lastShakeTimestamp: Long = 0L
+    private var lastLightStateDark: Boolean = false
+    private var powerReceiver: BroadcastReceiver? = null
 
     companion object {
         private const val TAG = "ShakeService"
@@ -38,6 +42,8 @@ class ShakeService : Service(), SensorEventListener {
         private const val NOTIFICATION_ID = 1001
         private const val SHAKE_THRESHOLD_G = 2.5f
         private const val COOLDOWN_MS = 3000L
+        private const val LIGHT_COOLDOWN_MS = 10000L
+        private var lastLightTransitionTimestamp: Long = 0L
 
         const val ACTION_START = "com.example.livingphone.ACTION_START"
         const val ACTION_STOP = "com.example.livingphone.ACTION_STOP"
@@ -64,18 +70,42 @@ class ShakeService : Service(), SensorEventListener {
         }
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        
         accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-
-        accelerometer?.let { sensor ->
-            sensorManager?.registerListener(
-                this,
-                sensor,
-                SensorManager.SENSOR_DELAY_UI
-            )
-            Log.d(TAG, "Accelerometer listener registered successfully.")
-        } ?: run {
-            Log.w(TAG, "Device does not have an accelerometer.")
+        accelerometer?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
+
+        lightSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_LIGHT)
+        lightSensor?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+
+        registerPowerReceiver()
+    }
+
+    private fun registerPowerReceiver() {
+        powerReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_POWER_CONNECTED -> {
+                        playSound(R.raw.power_connected)
+                        triggerHapticFeedback()
+                    }
+                    Intent.ACTION_POWER_DISCONNECTED -> {
+                        val disconnectSounds = listOf(R.raw.power_disconnected, R.raw.power_disconnected_two)
+                        playSound(disconnectSounds.random())
+                        triggerHapticFeedback()
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        registerReceiver(powerReceiver, filter)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -87,36 +117,46 @@ class ShakeService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        if (event == null) return
 
-        val x = event.values[0]
-        val y = event.values[1]
-        val z = event.values[2]
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                val gX = event.values[0] / SensorManager.GRAVITY_EARTH
+                val gY = event.values[1] / SensorManager.GRAVITY_EARTH
+                val gZ = event.values[2] / SensorManager.GRAVITY_EARTH
+                val gForce = sqrt((gX * gX + gY * gY + gZ * gZ).toDouble()).toFloat()
 
-        val gX = x / SensorManager.GRAVITY_EARTH
-        val gY = y / SensorManager.GRAVITY_EARTH
-        val gZ = z / SensorManager.GRAVITY_EARTH
+                if (gForce > SHAKE_THRESHOLD_G) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastShakeTimestamp >= COOLDOWN_MS) {
+                        lastShakeTimestamp = now
+                        playRandomShakeSound()
+                        triggerHapticFeedback()
+                    }
+                }
+            }
+            Sensor.TYPE_LIGHT -> {
+                val lux = event.values[0]
+                val isDark = lux < 5.0f
+                val now = System.currentTimeMillis()
 
-        val gForce = sqrt((gX * gX + gY * gY + gZ * gZ).toDouble()).toFloat()
+                if (isDark != lastLightStateDark && (now - lastLightTransitionTimestamp > LIGHT_COOLDOWN_MS)) {
+                    lastLightStateDark = isDark
+                    lastLightTransitionTimestamp = now
 
-        if (gForce > SHAKE_THRESHOLD_G) {
-            val now = System.currentTimeMillis()
-            if (now - lastShakeTimestamp >= COOLDOWN_MS) {
-                lastShakeTimestamp = now
-                Log.d(TAG, "Shake detected! G-force: $gForce. Playing audio...")
-                playRandomSound()
-                triggerHapticFeedback()
+                    if (isDark) {
+                        playSound(R.raw.darkness)
+                    } else {
+                        playSound(R.raw.light)
+                    }
+                }
             }
         }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // No-op
-    }
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    private fun playRandomSound() {
-        releaseMediaPlayer()
-
+    private fun playRandomShakeSound() {
         val soundResources = listOf(
             R.raw.s_one,
             R.raw.s_two,
@@ -124,35 +164,25 @@ class ShakeService : Service(), SensorEventListener {
             R.raw.s_four,
             R.raw.s_five
         )
-        val selectedSound = soundResources.random()
+        playSound(soundResources.random())
+    }
 
+    private fun playSound(resourceId: Int) {
+        releaseMediaPlayer()
         try {
-            mediaPlayer = MediaPlayer.create(applicationContext, selectedSound)?.apply {
+            mediaPlayer = MediaPlayer.create(applicationContext, resourceId)?.apply {
                 setOnCompletionListener { player ->
-                    try {
-                        player.release()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error releasing completed MediaPlayer", e)
-                    }
-                    if (mediaPlayer === player) {
-                        mediaPlayer = null
-                    }
+                    player.release()
+                    if (mediaPlayer === player) mediaPlayer = null
                 }
                 setOnErrorListener { player, _, _ ->
-                    try {
-                        player.release()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error releasing failed MediaPlayer", e)
-                    }
-                    if (mediaPlayer === player) {
-                        mediaPlayer = null
-                    }
+                    player.release()
+                    if (mediaPlayer === player) mediaPlayer = null
                     true
                 }
                 start()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize or play sound with MediaPlayer", e)
             releaseMediaPlayer()
         }
     }
@@ -160,17 +190,9 @@ class ShakeService : Service(), SensorEventListener {
     private fun releaseMediaPlayer() {
         mediaPlayer?.let { player ->
             try {
-                if (player.isPlaying) {
-                    player.stop()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error stopping MediaPlayer", e)
-            }
-            try {
+                if (player.isPlaying) player.stop()
                 player.release()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error releasing MediaPlayer", e)
-            }
+            } catch (e: Exception) {}
         }
         mediaPlayer = null
     }
@@ -188,9 +210,7 @@ class ShakeService : Service(), SensorEventListener {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(150L)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Vibration failed", e)
-        }
+        } catch (e: Exception) {}
     }
 
     private fun createNotificationChannel() {
@@ -200,7 +220,7 @@ class ShakeService : Service(), SensorEventListener {
                 "Living Phone Active Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps Living Phone listening for shakes in the background"
+                description = "Keeps Living Phone alive and responsive"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -213,15 +233,13 @@ class ShakeService : Service(), SensorEventListener {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            launchIntent,
+            this, 0, launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Living Phone is Awake")
-            .setContentText("Listening to accelerometer movements...")
+            .setContentTitle("Living Phone is Alive")
+            .setContentText("Listening to shakes, light, and energy...")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -234,6 +252,12 @@ class ShakeService : Service(), SensorEventListener {
         sensorManager?.unregisterListener(this)
         sensorManager = null
         accelerometer = null
+        lightSensor = null
+
+        powerReceiver?.let {
+            try { unregisterReceiver(it) } catch (e: Exception) {}
+        }
+        powerReceiver = null
 
         releaseMediaPlayer()
         _isServiceRunning.value = false
@@ -244,7 +268,6 @@ class ShakeService : Service(), SensorEventListener {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
-        Log.d(TAG, "ShakeService destroyed and cleaned up.")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
