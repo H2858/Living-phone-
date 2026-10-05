@@ -1,5 +1,8 @@
 package com.example.livingphone
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,10 +14,24 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.media.MediaPlayer
 import android.os.BatteryManager
+import android.os.Build
 import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.sqrt
 
 class ShakeService : Service(), SensorEventListener {
+
+    companion object {
+        const val ACTION_START = "ACTION_START"
+        const val ACTION_STOP = "ACTION_STOP"
+        private const val COOLDOWN_TIME = 4000L
+        
+        private val _isServiceRunning = MutableStateFlow(false)
+        val isServiceRunning: StateFlow<Boolean> = _isServiceRunning.asStateFlow()
+    }
 
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
@@ -25,7 +42,6 @@ class ShakeService : Service(), SensorEventListener {
     private var currentLang = "dz"
     
     private var lastPlayTime: Long = 0
-    private const val COOLDOWN_TIME = 4000L
     private var lastShakeTime: Long = 0
 
     private val powerReceiver = object : BroadcastReceiver() {
@@ -54,7 +70,45 @@ class ShakeService : Service(), SensorEventListener {
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
         lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
+    }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> {
+                startForegroundServiceWithNotification()
+                registerSensorsAndReceivers()
+                _isServiceRunning.value = true
+            }
+            ACTION_STOP -> {
+                stopForeground(true)
+                stopSelf()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun startForegroundServiceWithNotification() {
+        val channelId = "living_phone_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Living Phone Service",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Living Phone Active")
+            .setContentText("Sensors and battery monitors are running.")
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .build()
+
+        startForeground(1, notification)
+    }
+
+    private fun registerSensorsAndReceivers() {
         accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         proximitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         lightSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
@@ -136,5 +190,6 @@ class ShakeService : Service(), SensorEventListener {
             e.printStackTrace()
         }
         mediaPlayer?.release()
+        _isServiceRunning.value = false
     }
 }
