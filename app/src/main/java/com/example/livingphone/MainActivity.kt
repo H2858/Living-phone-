@@ -1,11 +1,9 @@
 package com.example.livingphone
 
-import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -63,7 +61,7 @@ fun MainScreen() {
         
         Spacer(modifier = Modifier.height(16.dp))
 
-        // صف أزرار اللهجات
+        // صف أزرار اللهجات مع تمرير حدث النقر بوضوح
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -84,7 +82,7 @@ fun MainScreen() {
 
         Spacer(modifier = Modifier.height(48.dp))
 
-        // أزرار التشغيل والإيقاف
+        // زر تشغيل الخدمة
         Button(
             onClick = {
                 val intent = Intent(context, ShakeService::class.java).apply {
@@ -102,6 +100,7 @@ fun MainScreen() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // زر إيقاف الخدمة
         OutlinedButton(
             onClick = {
                 val intent = Intent(context, ShakeService::class.java).apply {
