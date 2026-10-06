@@ -2,6 +2,7 @@ package com.example.livingphone
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -61,7 +62,6 @@ fun MainScreen() {
         
         Spacer(modifier = Modifier.height(16.dp))
 
-        // صف أزرار اللهجات مع تمرير حدث النقر بوضوح
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -82,14 +82,22 @@ fun MainScreen() {
 
         Spacer(modifier = Modifier.height(48.dp))
 
-        // زر تشغيل الخدمة
         Button(
             onClick = {
-                val intent = Intent(context, ShakeService::class.java).apply {
-                    action = ShakeService.ACTION_START
-                    putExtra("SELECTED_LANG", selectedLang)
+                try {
+                    val intent = Intent(context, ShakeService::class.java).apply {
+                        action = ShakeService.ACTION_START
+                        putExtra("SELECTED_LANG", selectedLang)
+                    }
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        context.startForegroundService(intent)
+                    } else {
+                        context.startService(intent)
+                    }
+                    Toast.makeText(context, "تم تشغيل الخدمة بنجاح ($selectedLang)", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "فشل التشغيل: ${e.message}", Toast.LENGTH_LONG).show()
                 }
-                ContextCompat.startForegroundService(context, intent)
             },
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(16.dp),
@@ -100,13 +108,17 @@ fun MainScreen() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // زر إيقاف الخدمة
         OutlinedButton(
             onClick = {
-                val intent = Intent(context, ShakeService::class.java).apply {
-                    action = ShakeService.ACTION_STOP
+                try {
+                    val intent = Intent(context, ShakeService::class.java).apply {
+                        action = ShakeService.ACTION_STOP
+                    }
+                    context.stopService(intent)
+                    Toast.makeText(context, "تم إيقاف الخدمة", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "فشل الإيقاف: ${e.message}", Toast.LENGTH_LONG).show()
                 }
-                context.startService(intent)
             },
             modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(16.dp)
