@@ -17,9 +17,6 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.sqrt
 
 class ShakeService : Service(), SensorEventListener {
@@ -28,9 +25,6 @@ class ShakeService : Service(), SensorEventListener {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         private const val COOLDOWN_TIME = 4000L
-        
-        private val _isServiceRunning = MutableStateFlow(false)
-        val isServiceRunning: StateFlow<Boolean> = _isServiceRunning.asStateFlow()
     }
 
     private lateinit var sensorManager: SensorManager
@@ -75,9 +69,11 @@ class ShakeService : Service(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                intent.getStringExtra("SELECTED_LANG")?.let {
+                    currentLang = it
+                }
                 startForegroundServiceWithNotification()
                 registerSensorsAndReceivers()
-                _isServiceRunning.value = true
             }
             ACTION_STOP -> {
                 stopForeground(true)
@@ -100,8 +96,8 @@ class ShakeService : Service(), SensorEventListener {
         }
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Living Phone Active")
-            .setContentText("Sensors and battery monitors are running.")
+            .setContentTitle("Living Phone Active ($currentLang)")
+            .setContentText("Sensors are listening...")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .build()
 
@@ -109,6 +105,7 @@ class ShakeService : Service(), SensorEventListener {
     }
 
     private fun registerSensorsAndReceivers() {
+        sensorManager.unregisterListener(this)
         accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         proximitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         lightSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
@@ -118,6 +115,7 @@ class ShakeService : Service(), SensorEventListener {
             addAction(Intent.ACTION_POWER_DISCONNECTED)
             addAction(Intent.ACTION_BATTERY_CHANGED)
         }
+        try { unregisterReceiver(powerReceiver) } catch (e: Exception) {}
         registerReceiver(powerReceiver, filter)
     }
 
@@ -190,6 +188,5 @@ class ShakeService : Service(), SensorEventListener {
             e.printStackTrace()
         }
         mediaPlayer?.release()
-        _isServiceRunning.value = false
     }
 }
